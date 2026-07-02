@@ -48,6 +48,9 @@ from watchdog.observers import Observer
 amm_home = Path.home() / ".ai-marketplace-monitor"
 amm_home.mkdir(parents=True, exist_ok=True)
 
+browser_profile_home = amm_home / "browser-profile"
+browser_profile_home.mkdir(parents=True, exist_ok=True)
+
 cache = Cache(amm_home)
 
 

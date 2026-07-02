@@ -4,7 +4,7 @@ from enum import Enum
 from logging import Logger
 from typing import Any, Callable, Generator, Generic, List, Type, TypeVar
 
-from playwright.sync_api import Browser, ElementHandle, Locator, Page  # type: ignore
+from playwright.sync_api import BrowserContext, ElementHandle, Locator, Page  # type: ignore
 
 from .listing import Listing
 from .utils import (
@@ -455,7 +455,7 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
     def __init__(
         self: "Marketplace",
         name: str,
-        browser: Browser | None,
+        browser: BrowserContext | None,
         keyboard_monitor: KeyboardMonitor | None = None,
         logger: Logger | None = None,
     ) -> None:
@@ -481,7 +481,7 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         if translator is not None:
             self.translator = translator
 
-    def set_browser(self: "Marketplace", browser: Browser | None = None) -> None:
+    def set_browser(self: "Marketplace", browser: BrowserContext | None = None) -> None:
         if browser is not None:
             self.browser = browser
             self.page = None
@@ -500,27 +500,17 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
     def create_page(self: "Marketplace", swap_proxy: bool = False) -> Page:
         assert self.browser is not None
 
-        # if there is an existing page, asked to swap_proxy, and there is an proxy_server
-        # setting with multiple proxies
-        if (
-            self.page
-            and swap_proxy
-            and self.config.monitor_config is not None
-            and isinstance(self.config.monitor_config.proxy_server, list)
-            and len(self.config.monitor_config.proxy_server) > 1
-        ):
-            self.page.close()
-            self.page = None
+        # ponytail: persistent context is launched once with a fixed proxy;
+        # swapping proxies now requires restarting the monitor. Upgrade path:
+        # relaunch _launch_browser() with a new proxy if this becomes needed.
+        if swap_proxy and self.logger:
+            self.logger.debug(
+                "[Browser] Proxy swap requested but not supported with a persistent "
+                "session; continuing with the current session."
+            )
 
         if self.page is None:
-            context = self.browser.new_context(
-                proxy=(
-                    None
-                    if self.config.monitor_config is None
-                    else self.config.monitor_config.get_proxy_options()
-                )
-            )
-            self.page = context.new_page()
+            self.page = self.browser.new_page()
         return self.page
 
     def goto_url(self: "Marketplace", url: str, attempt: int = 0) -> None:

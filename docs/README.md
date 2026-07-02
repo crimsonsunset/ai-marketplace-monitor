@@ -79,6 +79,7 @@ One or more sections `marketplace.name` show the options for interacting with va
 | `password`         | Optional    | String   | Password can be entered manually or kept in the config file. Falls back to `FACEBOOK_PASSWORD` environment variable if not set. |
 | `login_wait_time`  | Optional    | Integer  | Time (in seconds) to wait before searching to allow enough time to enter CAPTCHA. Defaults to 60.                |
 | `language`         | Optional    | String   | Language for webpages                                                                                            |
+| **Session profile** | —          | —        | Facebook login persists in `~/.ai-marketplace-monitor/browser-profile/` across daemon restarts (Playwright persistent context). Re-login only when Facebook invalidates the session. |
 | **Common options** |             |          | Options listed in the [Common options](#common-options) section below that provide default values for all items. |
 
 1. Multiple marketplaces with different `name`s can be specified for different `item`s (see [Multiple marketplaces](../README.md#multiple-marketplaces)). However, because the default `marketplace` for all items are `facebook`, it is easiest to define a default marketplace called `marketplace.facebook`.

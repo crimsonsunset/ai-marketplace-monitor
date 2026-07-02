@@ -8,7 +8,7 @@ import humanize
 import inflect
 import rich
 import schedule  # type: ignore
-from playwright.sync_api import Browser, Playwright, sync_playwright
+from playwright.sync_api import BrowserContext, Playwright, sync_playwright
 from rich.pretty import pretty_repr
 from rich.prompt import Prompt
 
@@ -25,6 +25,7 @@ from .utils import (
     Translator,
     aimm_event,
     amm_home,
+    browser_profile_home,
     cache,
     calculate_file_hash,
     counter,
@@ -60,7 +61,7 @@ class MarketplaceMonitor:
         self.ai_agents: List[AIBackend] = []
         self.keyboard_monitor: KeyboardMonitor | None = None
         self.playwright: Playwright = sync_playwright().start()
-        self.browser: Browser | None = None
+        self.browser: BrowserContext | None = None
         self.logger = logger
 
     def load_config_file(self: "MarketplaceMonitor") -> Config:
@@ -92,9 +93,8 @@ class MarketplaceMonitor:
                 doze(60, self.config_files, self.keyboard_monitor)
                 continue
 
-    def _launch_browser(self: "MarketplaceMonitor") -> Browser:
-        """Launch a browser, preferring Chromium if available, otherwise any installed browser."""
-        # Try browsers in order of preference
+    def _launch_browser(self: "MarketplaceMonitor") -> BrowserContext:
+        """Launch a persistent browser context, preferring Chromium if available."""
         browser_types = [
             ("chromium", self.playwright.chromium),
             ("firefox", self.playwright.firefox),
@@ -105,19 +105,21 @@ class MarketplaceMonitor:
             try:
                 if self.logger:
                     self.logger.debug(f"Attempting to launch {browser_name} browser...")
-                browser = browser_type.launch(headless=self.headless)
+                context = browser_type.launch_persistent_context(
+                    user_data_dir=browser_profile_home,
+                    headless=self.headless,
+                )
                 if self.logger:
                     self.logger.info(
-                        f"""{hilight("[Browser]", "info")} Successfully launched {browser_name} browser.""",
+                        f"""{hilight("[Browser]", "info")} Successfully launched {browser_name} browser with persistent profile at {browser_profile_home}.""",
                         extra=aimm_event("browser_ready", engine=browser_name),
                     )
-                return browser
+                return context
             except Exception as e:
                 if self.logger:
                     self.logger.debug(f"Failed to launch {browser_name}: {e}")
                 continue
 
-        # If all fail, raise an error
         raise RuntimeError(
             "No browser could be launched. Please ensure Chromium, Firefox, or WebKit is installed."
         )

@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 import humanize
 from currency_converter import CurrencyConverter  # type: ignore
-from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
+from playwright.sync_api import BrowserContext, ElementHandle, Page  # type: ignore
 from rich.pretty import pretty_repr
 
 from .listing import Listing
@@ -262,7 +262,7 @@ class FacebookMarketplace(Marketplace):
     def __init__(
         self: "FacebookMarketplace",
         name: str,
-        browser: Browser | None,
+        browser: BrowserContext | None,
         keyboard_monitor: KeyboardMonitor | None = None,
         logger: Logger | None = None,
     ) -> None:
