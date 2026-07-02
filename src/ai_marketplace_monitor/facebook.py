@@ -278,6 +278,25 @@ class FacebookMarketplace(Marketplace):
     def get_item_config(cls: Type["FacebookMarketplace"], **kwargs: Any) -> FacebookItemConfig:
         return FacebookItemConfig(**kwargs)
 
+    def _has_facebook_session(self: "FacebookMarketplace") -> bool:
+        """Return True when the browser already has an authenticated Facebook session.
+
+        After navigating to the login URL, Facebook redirects away when cookies are
+        valid. Checkpoint and 2FA flows still need the manual wait window.
+        """
+        assert self.page is not None
+        url = self.page.url
+        if "checkpoint" in url or "two_step" in url:
+            return False
+        if "/login" not in url:
+            return True
+        try:
+            return not self.page.locator('input[name="email"]').is_visible(timeout=3000)
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            return False
+
     def login(self: "FacebookMarketplace") -> None:
         assert self.browser is not None
 
@@ -310,6 +329,13 @@ class FacebookMarketplace(Marketplace):
                 self.logger.warning(
                     f"{hilight('[Login]', 'fail')} Could not handle cookie pop-up (or it was not present): {e!s}"
                 )
+
+        if self._has_facebook_session():
+            if self.logger:
+                self.logger.info(
+                    f"""{hilight("[Login]", "succ")} Existing Facebook session detected, skipping login wait."""
+                )
+            return
 
         self.config: FacebookMarketplaceConfig
         try:
