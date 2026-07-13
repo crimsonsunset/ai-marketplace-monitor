@@ -520,7 +520,7 @@ class FacebookMarketplace(Marketplace):
                     self.page, self.translator, self.logger
                 ).get_listings()
                 time.sleep(5)
-                if self.logger:
+                if not found_listings and self.logger:
                     self.logger.error(
                         f"""{hilight("[Search]", "fail")} Failed to get search results for {search_phrase} from {city}"""
                     )
@@ -906,10 +906,9 @@ class FacebookItemPage(WebPage):
 
 class FacebookRegularItemPage(FacebookItemPage):
     def verify_layout(self: "FacebookRegularItemPage") -> bool:
-        return any(
-            self.translator("Condition") in (x.text_content() or "")
-            for x in self.page.query_selector_all("li")
-        )
+        # Facebook no longer wraps the "Condition" label in a <li>; it now
+        # sits directly in a <span>. Match by exact text regardless of tag.
+        return self.page.get_by_text(self.translator("Condition"), exact=True).count() > 0
 
     def get_title(self: "FacebookRegularItemPage") -> str:
         try:
@@ -969,11 +968,17 @@ class FacebookRegularItemPage(FacebookItemPage):
 
     def get_description(self: "FacebookRegularItemPage") -> str:
         try:
-            # Find the span with text "condition", then parent, then next...
-            description_element = self.page.locator(
-                f'span:text("{self.translator("Condition")}") >> xpath=ancestor::ul[1] >> xpath=following-sibling::*[1]'
+            # Find the span with text "Condition", then walk up to the
+            # ancestor that also contains the description as a sibling
+            # block (the Condition/value pair sits alone two levels up,
+            # so require more than 2 children to skip past it).
+            condition_text = self.translator("Condition")
+            condition_element = self.page.locator(f'span:text("{condition_text}")').first
+            return self._parent_with_cond(
+                condition_element,
+                lambda x: len(x) > 2 and condition_text in (x[0].text_content() or ""),
+                1,
             )
-            return description_element.text_content() or self.translator("**unspecified**")
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -1011,14 +1016,22 @@ class FacebookRegularItemPage(FacebookItemPage):
 
     def get_location(self: "FacebookRegularItemPage") -> str:
         try:
-            # look for "Location is approximate", then find its neighbor
-            approximate_element = self.page.locator(
-                f'span:text("{self.translator("Location is approximate")}")'
-            )
+            # Facebook sometimes renders the city name and "Location is
+            # approximate" as a single span (e.g. "Shah Alam, SGR ·
+            # Location is approximate"), and sometimes as two separate
+            # sibling elements. Handle the combined form first, since its
+            # own text contains more than just the marker; otherwise fall
+            # back to the older sibling-element layout.
+            marker = self.translator("Location is approximate")
+            element = self.page.locator(f'span:text("{marker}")').first
+            own_text = element.text_content() or ""
+            if own_text.strip() != marker.strip():
+                location = own_text.split(marker)[0].replace("·", " ").strip()
+                if location:
+                    return location
             return self._parent_with_cond(
-                approximate_element,
-                lambda x: len(x) == 2
-                and self.translator("Location is approximate") in (x[1].text_content() or ""),
+                element,
+                lambda x: len(x) == 2 and marker in (x[1].text_content() or ""),
                 0,
             )
         except KeyboardInterrupt:
