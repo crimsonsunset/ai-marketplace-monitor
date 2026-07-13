@@ -12,6 +12,7 @@ from urllib.parse import quote
 import humanize
 from currency_converter import CurrencyConverter  # type: ignore
 from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # type: ignore
 from rich.pretty import pretty_repr
 
 from .listing import Listing
@@ -340,12 +341,31 @@ class FacebookMarketplace(Marketplace):
                 )
 
         self.config: FacebookMarketplaceConfig
+
+        # If a previous session was restored from a saved cookie/local-storage
+        # snapshot, Facebook redirects straight to the home feed and no
+        # email/password field will be present here. Detect that and skip
+        # the credential entry and manual-2FA wait entirely. Only a timeout
+        # (field never appeared) is treated as "already logged in" -- any
+        # other error (closed context, crashed page, etc.) should propagate
+        # instead of being silently mistaken for a successful login.
+        try:
+            email_field = self.page.wait_for_selector('input[name="email"]', timeout=15000)
+        except PlaywrightTimeoutError:
+            email_field = None
+
+        if email_field is None:
+            if self.logger:
+                self.logger.info(
+                    f"""{hilight("[Login]", "succ")} Reusing saved Facebook session, no login needed."""
+                )
+            self.save_storage_state()
+            return
+
         try:
             if self.config.username:
                 time.sleep(2)
-                selector = self.page.wait_for_selector('input[name="email"]')
-                if selector is not None:
-                    selector.type(self.config.username, delay=250)
+                email_field.type(self.config.username, delay=250)
             if self.config.password:
                 time.sleep(2)
                 selector = self.page.wait_for_selector('input[name="pass"]')
@@ -376,6 +396,11 @@ class FacebookMarketplace(Marketplace):
                     )
                 )
             doze(login_wait_time, keyboard_monitor=self.keyboard_monitor)
+
+        # Persist cookies/local storage now that we're past login (and any
+        # 2FA challenge), so the next run can restore this session instead
+        # of prompting for 2FA again.
+        self.save_storage_state()
 
     def search(
         self: "FacebookMarketplace", item_config: FacebookItemConfig
