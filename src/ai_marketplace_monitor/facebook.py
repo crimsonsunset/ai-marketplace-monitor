@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from itertools import repeat
 from logging import Logger
-from typing import Any, Generator, List, Tuple, Type, cast
+from typing import Any, Callable, Generator, List, Tuple, Type, cast
 from urllib.parse import quote
 
 import humanize
@@ -294,9 +294,18 @@ class FacebookMarketplace(Marketplace):
         browser: Browser | None,
         keyboard_monitor: KeyboardMonitor | None = None,
         logger: Logger | None = None,
+        request_visible_browser: Callable[[], Browser] | None = None,
+        restore_configured_browser: Callable[[], Browser] | None = None,
     ) -> None:
         assert name == self.name
-        super().__init__(name, browser, keyboard_monitor, logger)
+        super().__init__(
+            name,
+            browser,
+            keyboard_monitor,
+            logger,
+            request_visible_browser,
+            restore_configured_browser,
+        )
         self.page: Page | None = None
 
     @classmethod
@@ -307,9 +316,8 @@ class FacebookMarketplace(Marketplace):
     def get_item_config(cls: Type["FacebookMarketplace"], **kwargs: Any) -> FacebookItemConfig:
         return FacebookItemConfig(**kwargs)
 
-    def login(self: "FacebookMarketplace") -> None:
-        assert self.browser is not None
-
+    def _open_login_page(self: "FacebookMarketplace") -> None:
+        """Create a page, navigate to the login URL, and dismiss the cookie banner."""
         self.page = self.create_page(swap_proxy=True)
 
         # Navigate to the URL, no timeout
@@ -340,7 +348,20 @@ class FacebookMarketplace(Marketplace):
                     f"{hilight('[Login]', 'fail')} Could not handle cookie pop-up (or it was not present): {e!s}"
                 )
 
+    def login(self: "FacebookMarketplace") -> None:
+        assert self.browser is not None
         self.config: FacebookMarketplaceConfig
+
+        # If we don't have a saved session yet, this login will need fresh
+        # credentials and possibly a manual 2FA step. If the browser is
+        # currently running headless, temporarily switch it to a visible
+        # window so the user can actually see and complete it, then switch
+        # back to headless once the session has been saved.
+        showing_browser_for_login = not self.storage_state_path.is_file()
+        if showing_browser_for_login and self.request_visible_browser is not None:
+            self.browser = self.request_visible_browser()
+
+        self._open_login_page()
 
         # If a previous session was restored from a saved cookie/local-storage
         # snapshot, Facebook redirects straight to the home feed and no
@@ -360,10 +381,25 @@ class FacebookMarketplace(Marketplace):
                     f"""{hilight("[Login]", "succ")} Reusing saved Facebook session, no login needed."""
                 )
             self.save_storage_state()
+            if showing_browser_for_login and self.restore_configured_browser is not None:
+                self.browser = self.restore_configured_browser()
+                self.page = self.create_page()
             return
 
+        # A login form showed up even though we expected a saved session to
+        # restore it (e.g. the session expired). Switch to a visible browser
+        # now, if not already, so the user can complete it.
+        if not showing_browser_for_login and self.request_visible_browser is not None:
+            showing_browser_for_login = True
+            self.browser = self.request_visible_browser()
+            self._open_login_page()
+            try:
+                email_field = self.page.wait_for_selector('input[name="email"]', timeout=15000)
+            except PlaywrightTimeoutError:
+                email_field = None
+
         try:
-            if self.config.username:
+            if email_field is not None and self.config.username:
                 time.sleep(2)
                 email_field.type(self.config.username, delay=250)
             if self.config.password:
@@ -401,6 +437,12 @@ class FacebookMarketplace(Marketplace):
         # 2FA challenge), so the next run can restore this session instead
         # of prompting for 2FA again.
         self.save_storage_state()
+
+        # Login (and any 2FA) is done -- hide the browser again if we only
+        # made it visible for this login.
+        if showing_browser_for_login and self.restore_configured_browser is not None:
+            self.browser = self.restore_configured_browser()
+            self.page = self.create_page()
 
     def search(
         self: "FacebookMarketplace", item_config: FacebookItemConfig

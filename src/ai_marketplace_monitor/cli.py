@@ -112,7 +112,14 @@ def main(
     ] = None,
     headless: Annotated[
         Optional[bool],
-        typer.Option("--headless", help="If set to true, will not show the browser window."),
+        typer.Option(
+            "--headless",
+            help=(
+                "If set to true, will not show the browser window, except briefly to let "
+                "you log in (and complete 2FA if prompted) the first time, or if a saved "
+                "session expires."
+            ),
+        ),
     ] = False,
     clear_cache: Annotated[
         Optional[str],

@@ -474,6 +474,8 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         browser: Browser | None,
         keyboard_monitor: KeyboardMonitor | None = None,
         logger: Logger | None = None,
+        request_visible_browser: Callable[[], Browser] | None = None,
+        restore_configured_browser: Callable[[], Browser] | None = None,
     ) -> None:
         self.name = name
         self.browser = browser
@@ -482,6 +484,12 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         self.logger = logger
         self.page: Page | None = None
         self.context: BrowserContext | None = None
+        # Callbacks (provided by MarketplaceMonitor) that let a marketplace
+        # temporarily switch a headless browser to a visible one so the user
+        # can complete a login/2FA prompt, then switch it back afterwards.
+        # None if the monitor doesn't support swapping (e.g. headed already).
+        self.request_visible_browser = request_visible_browser
+        self.restore_configured_browser = restore_configured_browser
 
     @classmethod
     def get_config(cls: Type["Marketplace"], **kwargs: Any) -> TMarketplaceConfig:

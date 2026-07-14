@@ -92,7 +92,7 @@ class MarketplaceMonitor:
                 doze(60, self.config_files, self.keyboard_monitor)
                 continue
 
-    def _launch_browser(self: "MarketplaceMonitor") -> Browser:
+    def _launch_browser(self: "MarketplaceMonitor", headless: bool | None = None) -> Browser:
         """Launch a browser, preferring Chromium if available, otherwise any installed browser."""
         # Try browsers in order of preference
         browser_types = [
@@ -100,12 +100,13 @@ class MarketplaceMonitor:
             ("firefox", self.playwright.firefox),
             ("webkit", self.playwright.webkit),
         ]
+        effective_headless = self.headless if headless is None else headless
 
         for browser_name, browser_type in browser_types:
             try:
                 if self.logger:
                     self.logger.debug(f"Attempting to launch {browser_name} browser...")
-                browser = browser_type.launch(headless=self.headless)
+                browser = browser_type.launch(headless=effective_headless)
                 if self.logger:
                     self.logger.info(
                         f"""{hilight("[Browser]", "info")} Successfully launched {browser_name} browser.""",
@@ -121,6 +122,45 @@ class MarketplaceMonitor:
         raise RuntimeError(
             "No browser could be launched. Please ensure Chromium, Firefox, or WebKit is installed."
         )
+
+    def _relaunch_browser(self: "MarketplaceMonitor", headless: bool) -> Browser:
+        """Close the current browser (if any) and launch a new one in the given mode."""
+        if self.browser is not None:
+            try:
+                self.browser.close()
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(f"Failed to close browser before relaunch: {e}")
+        self.browser = self._launch_browser(headless=headless)
+        for marketplace in self.active_marketplaces.values():
+            marketplace.set_browser(self.browser)
+        return self.browser
+
+    def request_visible_browser(self: "MarketplaceMonitor") -> Browser:
+        """Switch to a visible browser, e.g. so the user can complete a login/2FA prompt.
+
+        No-op if the browser isn't configured to run headless in the first
+        place (it's already visible).
+        """
+        if self.headless:
+            if self.logger:
+                self.logger.info(
+                    f"""{hilight("[Browser]", "info")} Showing the browser window so you can complete login."""
+                )
+            return self._relaunch_browser(headless=False)
+        assert self.browser is not None
+        return self.browser
+
+    def restore_configured_browser(self: "MarketplaceMonitor") -> Browser:
+        """Switch back to the headless/headed mode the user originally configured."""
+        if self.headless:
+            if self.logger:
+                self.logger.info(
+                    f"""{hilight("[Browser]", "info")} Login complete, hiding the browser window again."""
+                )
+            return self._relaunch_browser(headless=True)
+        assert self.browser is not None
+        return self.browser
 
     def load_ai_agents(self: "MarketplaceMonitor") -> None:
         """Load the AI agent."""
@@ -355,7 +395,12 @@ class MarketplaceMonitor:
                 marketplace = self.active_marketplaces[marketplace_config.name]
             else:
                 marketplace = marketplace_class(
-                    marketplace_config.name, self.browser, self.keyboard_monitor, self.logger
+                    marketplace_config.name,
+                    self.browser,
+                    self.keyboard_monitor,
+                    self.logger,
+                    request_visible_browser=self.request_visible_browser,
+                    restore_configured_browser=self.restore_configured_browser,
                 )
                 self.active_marketplaces[marketplace_config.name] = marketplace
 
@@ -431,6 +476,34 @@ class MarketplaceMonitor:
                         marketplace,
                         item_config,
                     ).tag(item_config.name)
+
+    def _close_idle_browser(self: "MarketplaceMonitor") -> None:
+        """Close the browser while waiting for the next scheduled run to save resources."""
+        if self.browser is None:
+            return
+        for marketplace in self.active_marketplaces.values():
+            marketplace.save_storage_state()
+            marketplace.browser = None
+            marketplace.page = None
+            marketplace.context = None
+        try:
+            self.browser.close()
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Failed to close idle browser: {e}")
+        self.browser = None
+        if self.logger:
+            self.logger.info(
+                f"""{hilight("[Browser]", "info")} Closed browser to save resources until the next scheduled run."""
+            )
+
+    def _ensure_browser(self: "MarketplaceMonitor") -> None:
+        """Relaunch the browser if it was closed to save resources while idle."""
+        if self.browser is not None:
+            return
+        self.browser = self._launch_browser()
+        for marketplace in self.active_marketplaces.values():
+            marketplace.set_browser(self.browser)
 
     def handle_pause(self: "MarketplaceMonitor") -> None:
         """Handle interruption signal."""
@@ -539,6 +612,7 @@ class MarketplaceMonitor:
         assert self.browser is not None
         while True:
             self.handle_pause()
+            self._ensure_browser()
             self.schedule_jobs()
             if not schedule.get_jobs():
                 # this actually should not happen because at least one item is required for the configuration file
@@ -597,6 +671,11 @@ class MarketplaceMonitor:
                         self.logger.info(
                             f"""{hilight("[Schedule]", "info")} Next job to search {hilight(str(next(iter(next_job.tags))))} scheduled to run in {humanize.naturaldelta(idle_seconds)} at {next_job.next_run.strftime("%Y-%m-%d %H:%M:%S")}"""
                         )
+                    # all currently due jobs have been processed and we are
+                    # now waiting for the next scheduled run — close the
+                    # browser to save resources, it will be relaunched
+                    # just before the next job runs.
+                    self._close_idle_browser()
 
                 # sleep at most 1 hr, and print updated "next job" message
                 res = doze(
@@ -619,6 +698,7 @@ class MarketplaceMonitor:
                     self.keyboard_monitor.set_paused(True)
 
                 self.handle_pause()
+                self._ensure_browser()
                 schedule.run_pending()
 
     def stop_monitor(self: "MarketplaceMonitor") -> None:
@@ -673,7 +753,12 @@ class MarketplaceMonitor:
                     marketplace = self.active_marketplaces[marketplace_config.name]
                 else:
                     marketplace = marketplace_class(
-                        marketplace_config.name, None, None, self.logger
+                        marketplace_config.name,
+                        None,
+                        None,
+                        self.logger,
+                        request_visible_browser=self.request_visible_browser,
+                        restore_configured_browser=self.restore_configured_browser,
                     )
                     self.active_marketplaces[marketplace_config.name] = marketplace
 
