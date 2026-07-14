@@ -1,5 +1,5 @@
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from logging import Logger
 from pathlib import Path
@@ -22,6 +22,7 @@ from .utils import (
     Translator,
     amm_home,
     convert_to_seconds,
+    hash_dict,
     hilight,
 )
 
@@ -453,6 +454,13 @@ class ItemConfig(MarketItemCommonConfig):
             return
         if not isinstance(self.description, str):
             raise ValueError(f"Item {hilight(self.name)} description must be a string.")
+
+    @property
+    def hash(self: "ItemConfig") -> str:
+        # searched_count is a bookkeeping counter that increments on every search
+        # cycle, not part of the item's identity. Including it here would change
+        # the hash on every run and defeat the AI response cache (see BaseConfig.hash).
+        return hash_dict({k: v for k, v in asdict(self).items() if k != "searched_count"})
 
 
 TMarketplaceConfig = TypeVar("TMarketplaceConfig", bound=MarketplaceConfig)
