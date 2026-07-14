@@ -27,6 +27,10 @@ class AIResponse:
     score: int
     comment: str
     name: str = ""
+    # True when this response was loaded from a previous run's cache rather
+    # than freshly computed. Not meaningful as stored cache content — always
+    # recomputed on load, see from_cache().
+    cached: bool = False
 
     NOT_EVALUATED: ClassVar = "Not evaluated by AI"
 
@@ -72,7 +76,7 @@ class AIResponse:
         )
         if res is None:
             return None
-        return AIResponse(**res)
+        return AIResponse(**{**res, "cached": True})
 
     def to_cache(
         self: "AIResponse",

@@ -203,7 +203,25 @@ class MarketplaceMonitor:
                 listing, item_config=item_config, marketplace_config=marketplace_config
             )
             if self.logger:
-                if res.comment == AIResponse.NOT_EVALUATED:
+                if res.cached:
+                    self.logger.info(
+                        f"""{hilight("[AI]", "info")} Item {hilight(listing.title)} was already processed in previous runs.""",
+                        extra=aimm_event(
+                            "ai_eval",
+                            listing_id=listing.id,
+                            title=listing.title,
+                            url=getattr(listing, "post_url", None)
+                            or getattr(listing, "url", None),
+                            price=getattr(listing, "price", None),
+                            score=res.score,
+                            conclusion=res.conclusion,
+                            comment=res.comment,
+                            ai_name=res.name,
+                            item=item_config.name,
+                            cached=True,
+                        ),
+                    )
+                elif res.comment == AIResponse.NOT_EVALUATED:
                     if res.name:
                         self.logger.info(
                             f"""{hilight("[AI]", res.style)} {res.name or "AI"} did not evaluate {hilight(listing.title)}."""
@@ -712,7 +730,11 @@ class MarketplaceMonitor:
                     listing, item_config=item_config, marketplace_config=marketplace_config
                 )
                 if self.logger:
-                    if rating.comment == AIResponse.NOT_EVALUATED:
+                    if rating.cached:
+                        self.logger.info(
+                            f"""{hilight("[AI]", "info")} Item {hilight(listing.title)} was already processed in previous runs."""
+                        )
+                    elif rating.comment == AIResponse.NOT_EVALUATED:
                         if rating.name:
                             self.logger.info(
                                 f"""{hilight("[AI]", rating.style)} {rating.name or "AI"} did not evaluate {hilight(listing.title)}."""
