@@ -6,8 +6,6 @@ from enum import Enum
 from logging import Logger
 from typing import Any, ClassVar, DefaultDict, Deque, List, Optional, Tuple, Type
 
-import inflect
-
 from .ai import AIResponse  # type: ignore
 from .listing import Listing
 from .utils import BaseConfig, hilight
@@ -324,7 +322,6 @@ class PushNotificationConfig(NotificationConfig):
         #
         # we send listings with different status with different messages
         msgs: DefaultDict[NotificationStatus, List[Tuple[Listing, str]]] = defaultdict(list)
-        p = inflect.engine()
         for listing, rating, ns in zip(listings, ratings, notification_status):
             if ns == NotificationStatus.NOTIFIED and not force:
                 continue
@@ -393,19 +390,18 @@ class PushNotificationConfig(NotificationConfig):
             return False
 
         for ns, listing_msg in msgs.items():
-            if ns == NotificationStatus.NOT_NOTIFIED:
-                title = f"Found {len(listing_msg)} new {p.plural_noun(listing.name, len(listing_msg))} from {listing.marketplace}"
-            elif ns == NotificationStatus.EXPIRED:
-                title = f"Another look at {len(listing_msg)} {p.plural_noun(listing.name, len(listing_msg))} from {listing.marketplace}"
-            elif ns == NotificationStatus.LISTING_CHANGED:
-                title = f"Found {len(listing_msg)} updated {p.plural_noun(listing.name, len(listing_msg))} from {listing.marketplace}"
-            elif ns == NotificationStatus.LISTING_DISCOUNTED:
-                title = f"Found {len(listing_msg)} discounted {p.plural_noun(listing.name, len(listing_msg))} from {listing.marketplace}"
-            else:
-                title = f"Resend {len(listing_msg)} {p.plural_noun(listing.name, len(listing_msg))} from {listing.marketplace}"
+            for item, message in listing_msg:
+                if ns == NotificationStatus.NOT_NOTIFIED:
+                    title = f"Found new {item.name} from {item.marketplace}"
+                elif ns == NotificationStatus.EXPIRED:
+                    title = f"Another look at {item.name} from {item.marketplace}"
+                elif ns == NotificationStatus.LISTING_CHANGED:
+                    title = f"Found updated {item.name} from {item.marketplace}"
+                elif ns == NotificationStatus.LISTING_DISCOUNTED:
+                    title = f"Found discounted {item.name} from {item.marketplace}"
+                else:
+                    title = f"Resend {item.name} from {item.marketplace}"
 
-            message = "\n\n".join([x[1] for x in listing_msg])
-            #
-            if not self.send_message_with_retry(title, message, logger=logger):
-                return False
+                if not self.send_message_with_retry(title, message, logger=logger):
+                    return False
         return True
