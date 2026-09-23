@@ -10,7 +10,7 @@
 
 | Field | Value |
 |---|---|
-| Gate | 5 (shipped) |
+| Gate | 6 (CI green, no bot review) |
 | Ticket | #1 |
 | Branch | feature/1-carousel-photo-model-numbers |
 | Repos | ai-marketplace-monitor (fork `crimsonsunset/ai-marketplace-monitor`) |
