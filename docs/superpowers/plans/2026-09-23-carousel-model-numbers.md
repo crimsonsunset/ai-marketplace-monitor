@@ -10,7 +10,7 @@
 
 | Field | Value |
 |---|---|
-| Gate | 3 (AC met, plan reconciled) |
+| Gate | 5 (shipped) |
 | Ticket | #1 |
 | Branch | feature/1-carousel-photo-model-numbers |
 | Repos | ai-marketplace-monitor (fork `crimsonsunset/ai-marketplace-monitor`) |
