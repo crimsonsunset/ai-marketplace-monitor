@@ -4,13 +4,13 @@
 **Branch:** `feature/1-carousel-photo-model-numbers`
 **Base:** `session-persistence` @ `a816333` (stacked on [PR #2](https://github.com/crimsonsunset/ai-marketplace-monitor/pull/2))
 **Date:** 2026-09-23
-**Status:** Plan ready
+**Status:** Implemented, AC met
 
 ## Flow state
 
 | Field | Value |
 |---|---|
-| Gate | 2 (plan ready) |
+| Gate | 3 (AC met, plan reconciled) |
 | Ticket | #1 |
 | Branch | feature/1-carousel-photo-model-numbers |
 | Repos | ai-marketplace-monitor (fork `crimsonsunset/ai-marketplace-monitor`) |
@@ -77,7 +77,7 @@ Out:
 Flow for a listing that is not already in `LISTING_DETAILS`:
 
 1. `get_listing_details` opens the item page and `parse_listing` runs, as it does now.
-2. A shared walker on `FacebookItemPage` clicks through the gallery, records each distinct CDN image URL, and stops when the next control is gone or the URL repeats. `get_image_url` still returns the hero for `Listing.image`.
+2. A shared walker on `FacebookItemPage` clicks through the gallery, records each distinct CDN image URL, and stops when the next control is gone, the URL repeats, or it has seen 8 slides. `get_image_url` still returns the hero for `Listing.image`.
 3. Before the page is left, download each URL with `context.request`. Resize so the long side is about 1600.
 4. If the title or description already has a full model token, skip the call and leave the model fields empty.
 5. Otherwise hash the bytes. On a cache hit, reuse the stored JSON. On a miss, send the images plus title and description to OpenRouter. Ask for JSON only: `brand`, `model`, `size_in`, `image_index`, `confidence`. Null when nothing is printed. Do not invent a SKU suffix.
@@ -93,10 +93,11 @@ OpenRouter request: OpenAI client, model `google/gemini-3.1-flash-lite`, image p
 |---|---|
 | [listing.py](src/ai_marketplace_monitor/listing.py) | Optional model fields and `images`. Exclude them from `hash`. Defaults so old cache rows still construct. |
 | [utils.py](src/ai_marketplace_monitor/utils.py) | New `CacheType` for the vision result. Long-side resize that does not change the 800x600 email default. |
-| [facebook.py](src/ai_marketplace_monitor/facebook.py) | Gallery walker on the item page. In-session download. Merge the new fields onto the search listing. |
+| [facebook.py](src/ai_marketplace_monitor/facebook.py) | Gallery walker on the item page. In-session download. Merge the new fields onto the search listing. `login()` asserts `page` is set so mypy is clean on the session-persistence login path. |
 | [ai.py](src/ai_marketplace_monitor/ai.py) | Vision call and JSON parse. Skip rule. Cache get/set by image-bytes hash. No change to `get_prompt` or rating parse. |
 | [notification.py](src/ai_marketplace_monitor/notification.py) | Model line in plain, markdown, and HTML messages. |
-| [email.html.j2](src/ai_marketplace_monitor/email.html.j2) | Same model line in the email body. Hero image markup stays. |
+| [email.html.j2](src/ai_marketplace_monitor/email.html.j2) | Same model line in the HTML email body. Hero image markup stays. |
+| [email_notify.py](src/ai_marketplace_monitor/email_notify.py) | Same model line in the plain-text email body. The attachment is still `listing.image` only. |
 | [found_export.py](src/ai_marketplace_monitor/webui/found_export.py) | `brand`, `model`, `size_in` columns, filled from the listing dict. |
 | [tests/test_facebook.py](tests/test_facebook.py) | Fake-page walker: N distinct slides, stop on repeat, ignore non-listing icons. |
 | New `tests/test_model_vision.py` | Hash exclusion, skip rule (token vs series name), JSON parse, cache hit does not call. |

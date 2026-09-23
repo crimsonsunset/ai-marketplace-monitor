@@ -164,6 +164,13 @@
                                 </div>
                                 {% endif %}
 
+                                {% if listing.brand or listing.model %}
+                                <div style="color: #333333; margin: 12px 0; font-size: 14px;">
+                                    <span style="font-weight: bold;">Model:</span>
+                                    {{ listing.brand }} {{ listing.model }}{% if listing.size_in %}, {{ listing.size_in }} in{% endif %}
+                                </div>
+                                {% endif %}
+
                                 <!-- AI Rating -->
                                 {% if rating.comment != rating.NOT_EVALUATED %}
                                 <div style="background-color: #F8F9FA; padding: 12px; border-radius: 4px; margin: 15px 0;">

@@ -19,7 +19,7 @@ def test_rows_to_csv_empty_has_header_only() -> None:
     assert lines[0].split(",") == CSV_COLUMNS
     # Pin the canonical column order (a binding requirement) against silent drift.
     assert lines[0] == (
-        "found_at,item,marketplace,title,price,rating,ai_comment,"
+        "found_at,item,marketplace,title,brand,model,size_in,price,rating,ai_comment,"
         "location,seller,condition,notified_user,url"
     )
     assert len(lines) == 1
@@ -123,6 +123,21 @@ def test_build_rows_full_join(temp_cache: Cache) -> None:
     assert row["condition"] == "used_good"
     assert row["notified_user"] == "me"
     assert row["url"] == "https://www.facebook.com/marketplace/item/123/?ref=search"
+
+
+def test_build_rows_includes_model_fields(temp_cache: Cache) -> None:
+    listing = _listing()
+    listing.brand = "Apple"
+    listing.model = "A2633"
+    listing.size_in = ""
+    listing.to_cache(listing.post_url, local_cache=temp_cache)
+    _seed_rating(temp_cache, listing)
+    _seed_notified(temp_cache, listing)
+
+    row = build_found_rows(temp_cache)[0]
+    assert row["brand"] == "Apple"
+    assert row["model"] == "A2633"
+    assert row["size_in"] == ""
 
 
 def test_build_rows_missing_details_uses_fallback_url(temp_cache: Cache) -> None:

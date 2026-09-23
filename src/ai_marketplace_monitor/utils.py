@@ -77,6 +77,7 @@ class CacheType(Enum):
     AI_INQUIRY = "ai-inquiries"
     USER_NOTIFIED = "user-notifications"
     COUNTERS = "counters"
+    MODEL_VISION = "model-vision"
 
 
 class CounterItem(Enum):
@@ -689,6 +690,35 @@ def resize_image_data(image_data: bytes, max_width: int = 800, max_height: int =
     # Convert back to bytes
     buffer = io.BytesIO()
     resized_image.save(buffer, format=image.format)
+    return buffer.getvalue()
+
+
+def resize_image_long_side(image_data: bytes, max_long_side: int = 1600) -> bytes:
+    """Shrink an image so its longer side is at most max_long_side, as JPEG.
+
+    The email path keeps resize_image_data at 800x600. A sticker needs the
+    longer side left large enough to read.
+    """
+    try:
+        opened = Image.open(io.BytesIO(image_data))
+        converted = opened.convert("RGB")
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        return image_data
+
+    width, height = converted.size
+    long_side = max(width, height)
+    output = converted
+    if long_side > max_long_side and long_side > 0:
+        ratio = max_long_side / long_side
+        output = converted.resize(
+            (max(int(width * ratio), 1), max(int(height * ratio), 1)),
+            Image.Resampling.LANCZOS,
+        )
+
+    buffer = io.BytesIO()
+    output.save(buffer, format="JPEG", quality=85)
     return buffer.getvalue()
 
 

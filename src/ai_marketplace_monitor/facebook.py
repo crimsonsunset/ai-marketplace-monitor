@@ -15,6 +15,7 @@ from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # type: ignore
 from rich.pretty import pretty_repr
 
+from .ai import has_full_model_token, read_model_from_photos
 from .listing import Listing
 from .marketplace import ItemConfig, Marketplace, MarketplaceConfig, WebPage
 from .utils import (
@@ -28,6 +29,7 @@ from .utils import (
     extract_price,
     hilight,
     is_substring,
+    resize_image_long_side,
 )
 
 
@@ -370,6 +372,7 @@ class FacebookMarketplace(Marketplace):
         # (field never appeared) is treated as "already logged in" -- any
         # other error (closed context, crashed page, etc.) should propagate
         # instead of being silently mistaken for a successful login.
+        assert self.page is not None
         try:
             email_field = self.page.wait_for_selector('input[name="email"]', timeout=15000)
         except PlaywrightTimeoutError:
@@ -393,11 +396,13 @@ class FacebookMarketplace(Marketplace):
             showing_browser_for_login = True
             self.browser = self.request_visible_browser()
             self._open_login_page()
+            assert self.page is not None
             try:
                 email_field = self.page.wait_for_selector('input[name="email"]', timeout=15000)
             except PlaywrightTimeoutError:
                 email_field = None
 
+        assert self.page is not None
         try:
             if email_field is not None and self.config.username:
                 time.sleep(2)
@@ -624,11 +629,9 @@ class FacebookMarketplace(Marketplace):
                                 f"""{hilight("[Retrieve]", "fail")} Failed to get item details: {e}"""
                             )
                         continue
-                    # currently we trust the other items from summary page a bit better
-                    # so we do not copy title, description etc from the detailed result
-                    for attr in ("condition", "seller", "description"):
-                        # other attributes should be consistent
-                        setattr(listing, attr, getattr(details, attr))
+                    # Title and the hero image stay from the search card.
+                    # Model fields only exist on the item page, so they have to be copied.
+                    copy_item_page_fields(listing, details)
                     listing.name = item_config.name
                     if self.logger:
                         self.logger.debug(
@@ -681,8 +684,34 @@ class FacebookMarketplace(Marketplace):
                 "The listing might be missing key information (e.g. seller) or not in English."
                 "Please add option language to your marketplace configuration is the latter is the case. See https://github.com/BoPeng/ai-marketplace-monitor?tab=readme-ov-file#support-for-non-english-languages for details."
             )
+        self._read_model_from_carousel(details)
         details.to_cache(post_url)
         return details, False
+
+    def _read_model_from_carousel(self: "FacebookMarketplace", details: Listing) -> None:
+        """Download item-page photos and store a sticker model. Skip on cache hits.
+
+        Called only after a fresh parse. A listing loaded from cache is returned
+        earlier and is not backfilled.
+        """
+        if has_full_model_token(details.title, details.description):
+            return
+        if not details.images or self.page is None:
+            return
+        blobs: List[bytes] = []
+        for url in details.images:
+            blob = _download_photo(self.page, url)
+            if blob:
+                blobs.append(resize_image_long_side(blob))
+        if not blobs:
+            return
+        try:
+            read_model_from_photos(details, blobs, logger=self.logger)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            if self.logger:
+                self.logger.debug(f"{hilight('[AI]', 'fail')} Model photo read failed: {exc}")
 
     def check_listing(
         self: "FacebookMarketplace",
@@ -966,9 +995,46 @@ class FacebookItemPage(WebPage):
             description=description,
             seller=self.get_seller(),
         )
+        res.images = self.collect_carousel_urls()
         if self.logger:
             self.logger.debug(f"{hilight('[Retrieve]', 'succ')} {pretty_repr(res)}")
         return cast(Listing, res)
+
+    def collect_carousel_urls(self: "FacebookItemPage") -> List[str]:
+        """Click through the gallery and return each distinct listing photo URL."""
+
+        def current_url() -> str:
+            locator = self.page.locator('img[src*="scontent"]')
+            if locator.count() == 0:
+                return ""
+            return locator.first.get_attribute("src") or ""
+
+        def has_next() -> bool:
+            button = self._next_photo_button()
+            return button.count() > 0
+
+        def click_next() -> None:
+            self._next_photo_button().first.click(timeout=2000)
+            self.page.wait_for_timeout(400)
+
+        try:
+            return walk_gallery(current_url, has_next, click_next)
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            if self.logger:
+                self.logger.debug(f"{hilight('[Retrieve]', 'fail')} Carousel walk failed: {exc}")
+            return []
+
+    def _next_photo_button(self: "FacebookItemPage") -> Any:
+        """Return the gallery's next control, localized when a translator is set."""
+        labels = [
+            self.translator("Next photo"),
+            self.translator("View next image"),
+            self.translator("Next image"),
+        ]
+        selector = ", ".join(f'[aria-label="{label}"]' for label in labels)
+        return self.page.locator(selector)
 
 
 class FacebookRegularItemPage(FacebookItemPage):
@@ -1433,6 +1499,79 @@ class FacebookAutoItemWithDescriptionPage(FacebookAutoItemWithAboutAndDescriptio
             if self.logger:
                 self.logger.debug(f"{hilight('[Retrieve]', 'fail')} {e}")
             return ""
+
+
+def is_listing_photo_url(url: str) -> bool:
+    """Return True for a Facebook CDN photo, not a static UI asset."""
+    if not url:
+        return False
+    lowered = url.lower()
+    if "rsrc.php" in lowered or "emoji.php" in lowered or "play_48dp" in lowered:
+        return False
+    return "scontent" in lowered
+
+
+def photo_identity(url: str) -> str:
+    """Return the URL path, ignoring CDN query tokens."""
+    return url.split("?")[0]
+
+
+def walk_gallery(
+    current_url: Callable[[], str],
+    has_next: Callable[[], bool],
+    click_next: Callable[[], None],
+    max_slides: int = 8,
+) -> List[str]:
+    """Click through a gallery and return each distinct listing photo URL."""
+    found: List[str] = []
+    seen: set[str] = set()
+    for _ in range(max_slides):
+        url = current_url() or ""
+        identity = photo_identity(url)
+        if identity and identity in seen:
+            break
+        if is_listing_photo_url(url):
+            seen.add(identity)
+            found.append(url)
+        if not has_next():
+            break
+        click_next()
+        if photo_identity(current_url() or "") == identity and identity:
+            break
+    return found
+
+
+def copy_item_page_fields(listing: Listing, details: Listing) -> None:
+    """Copy item-page fields onto the search listing that gets notified.
+
+    The hero ``image`` stays on the search card. Carousel URLs and the sticker
+    read exist only on the parsed item page.
+    """
+    for attr in (
+        "condition",
+        "seller",
+        "description",
+        "images",
+        "brand",
+        "model",
+        "size_in",
+        "image_index",
+        "confidence",
+    ):
+        setattr(listing, attr, getattr(details, attr))
+
+
+def _download_photo(page: Page, url: str) -> bytes | None:
+    """Download one photo with the logged-in browser context."""
+    try:
+        response = page.context.request.get(url, timeout=20_000)
+        if not response.ok:
+            return None
+        return response.body()
+    except KeyboardInterrupt:
+        raise
+    except Exception:
+        return None
 
 
 def parse_listing(

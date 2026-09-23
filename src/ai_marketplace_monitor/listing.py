@@ -1,5 +1,5 @@
-from dataclasses import asdict, dataclass
-from typing import Optional, Tuple, Type
+from dataclasses import asdict, dataclass, field
+from typing import List, Optional, Tuple, Type
 
 from diskcache import Cache  # type: ignore
 
@@ -20,6 +20,14 @@ class Listing:
     seller: str
     condition: str
     description: str
+    # Carousel URLs and sticker fields. Defaults keep old cache rows loadable.
+    # Excluded from hash so a photo or a model read does not re-rate the deal.
+    images: List[str] = field(default_factory=list)
+    brand: str = ""
+    model: str = ""
+    size_in: str = ""
+    image_index: Optional[int] = None
+    confidence: str = ""
 
     @property
     def content(self: "Listing") -> Tuple[str, str, str]:
@@ -27,13 +35,14 @@ class Listing:
 
     @property
     def hash(self: "Listing") -> str:
-        # we need to normalize post_url before hashing because post_url will be different
-        # each time from a search page. We also does not count image
+        """Hash the deal identity, ignoring photos and extracted model fields."""
+        # post_url query changes every search. Photos and sticker reads must not either.
+        skipped = {"image", "images", "brand", "model", "size_in", "image_index", "confidence"}
         return hash_dict(
             {
                 x: (y.split("?")[0] if x == "post_url" else y)
                 for x, y in asdict(self).items()
-                if x != "image"
+                if x not in skipped
             }
         )
 

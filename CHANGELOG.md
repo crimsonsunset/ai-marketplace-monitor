@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Read brand, model, and size from every Facebook listing carousel photo, and include them in notifications and the found CSV ([#1](https://github.com/crimsonsunset/ai-marketplace-monitor/issues/1))
+
 ## [0.10.2] - 2026-07-17
 
 ### Added
