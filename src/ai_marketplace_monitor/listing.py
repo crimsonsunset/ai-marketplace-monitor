@@ -1,5 +1,5 @@
 from dataclasses import asdict, dataclass, field
-from typing import List, Optional, Tuple, Type
+from typing import Dict, List, Optional, Tuple, Type
 
 from diskcache import Cache  # type: ignore
 
@@ -28,6 +28,8 @@ class Listing:
     size_in: str = ""
     image_index: Optional[int] = None
     confidence: str = ""
+    # Looked-up set specs. Empty until a model is researched. Not part of the deal hash.
+    specs: Dict[str, str] = field(default_factory=dict)
 
     @property
     def content(self: "Listing") -> Tuple[str, str, str]:
@@ -35,9 +37,18 @@ class Listing:
 
     @property
     def hash(self: "Listing") -> str:
-        """Hash the deal identity, ignoring photos and extracted model fields."""
-        # post_url query changes every search. Photos and sticker reads must not either.
-        skipped = {"image", "images", "brand", "model", "size_in", "image_index", "confidence"}
+        """Hash the deal identity, ignoring photos, extracted model fields, and looked-up specs."""
+        # post_url query changes every search. Photos, sticker reads, and spec lookups must not either.
+        skipped = {
+            "image",
+            "images",
+            "brand",
+            "model",
+            "size_in",
+            "image_index",
+            "confidence",
+            "specs",
+        }
         return hash_dict(
             {
                 x: (y.split("?")[0] if x == "post_url" else y)
