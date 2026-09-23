@@ -1,10 +1,17 @@
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from logging import Logger
+from pathlib import Path
 from typing import Any, Callable, Generator, Generic, List, Type, TypeVar
 
-from playwright.sync_api import Browser, ElementHandle, Locator, Page  # type: ignore
+from playwright.sync_api import (  # type: ignore
+    Browser,
+    BrowserContext,
+    ElementHandle,
+    Locator,
+    Page,
+)
 
 from .listing import Listing
 from .utils import (
@@ -13,7 +20,9 @@ from .utils import (
     KeyboardMonitor,
     MonitorConfig,
     Translator,
+    amm_home,
     convert_to_seconds,
+    hash_dict,
     hilight,
 )
 
@@ -446,6 +455,13 @@ class ItemConfig(MarketItemCommonConfig):
         if not isinstance(self.description, str):
             raise ValueError(f"Item {hilight(self.name)} description must be a string.")
 
+    @property
+    def hash(self: "ItemConfig") -> str:
+        # searched_count is a bookkeeping counter that increments on every search
+        # cycle, not part of the item's identity. Including it here would change
+        # the hash on every run and defeat the AI response cache (see BaseConfig.hash).
+        return hash_dict({k: v for k, v in asdict(self).items() if k != "searched_count"})
+
 
 TMarketplaceConfig = TypeVar("TMarketplaceConfig", bound=MarketplaceConfig)
 TItemConfig = TypeVar("TItemConfig", bound=ItemConfig)
@@ -458,6 +474,8 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         browser: Browser | None,
         keyboard_monitor: KeyboardMonitor | None = None,
         logger: Logger | None = None,
+        request_visible_browser: Callable[[], Browser] | None = None,
+        restore_configured_browser: Callable[[], Browser] | None = None,
     ) -> None:
         self.name = name
         self.browser = browser
@@ -465,6 +483,13 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         self.translator = Translator()
         self.logger = logger
         self.page: Page | None = None
+        self.context: BrowserContext | None = None
+        # Callbacks (provided by MarketplaceMonitor) that let a marketplace
+        # temporarily switch a headless browser to a visible one so the user
+        # can complete a login/2FA prompt, then switch it back afterwards.
+        # None if the monitor doesn't support swapping (e.g. headed already).
+        self.request_visible_browser = request_visible_browser
+        self.restore_configured_browser = restore_configured_browser
 
     @classmethod
     def get_config(cls: Type["Marketplace"], **kwargs: Any) -> TMarketplaceConfig:
@@ -485,9 +510,36 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         if browser is not None:
             self.browser = browser
             self.page = None
+            self.context = None
+
+    @property
+    def storage_state_path(self: "Marketplace") -> "Path":
+        """Path to the file used to persist cookies/local storage between runs."""
+        state_dir = amm_home / "browser_state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / f"{self.name}.json"
+
+    def save_storage_state(self: "Marketplace") -> None:
+        """Persist the current browser context's cookies and local storage to disk.
+
+        This is what lets a subsequent run start already authenticated
+        (e.g. skipping Facebook's 2FA prompt) instead of logging in from scratch.
+        """
+        if self.context is None:
+            return
+        try:
+            self.context.storage_state(path=str(self.storage_state_path))
+            if self.logger:
+                self.logger.debug(
+                    f"""{hilight("[Login]", "info")} Saved session to {self.storage_state_path}."""
+                )
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"Failed to save browser session state: {e}")
 
     def stop(self: "Marketplace") -> None:
         if self.browser is not None:
+            self.save_storage_state()
             # stop closing the browser since Ctrl-C will kill playwright,
             # leaving browser in a dysfunctional status.
             # see
@@ -496,6 +548,7 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
             # self.browser.close()
             self.browser = None
             self.page = None
+            self.context = None
 
     def create_page(self: "Marketplace", swap_proxy: bool = False) -> Page:
         assert self.browser is not None
@@ -511,15 +564,19 @@ class Marketplace(Generic[TMarketplaceConfig, TItemConfig]):
         ):
             self.page.close()
             self.page = None
+            self.context = None
 
         if self.page is None:
+            state_path = self.storage_state_path
             context = self.browser.new_context(
                 proxy=(
                     None
                     if self.config.monitor_config is None
                     else self.config.monitor_config.get_proxy_options()
-                )
+                ),
+                storage_state=str(state_path) if state_path.is_file() else None,
             )
+            self.context = context
             self.page = context.new_page()
         return self.page
 

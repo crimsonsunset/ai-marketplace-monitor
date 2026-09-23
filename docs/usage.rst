@@ -23,6 +23,11 @@ Run in headless mode (without browser window):
 
     $ ai-marketplace-monitor --headless
 
+The browser window is still shown briefly the first time you run with
+``--headless`` (or whenever a saved login session expires), so you can log
+in and complete any 2FA prompt. It's hidden again automatically once the
+session is saved, and stays hidden for subsequent runs.
+
 Check Individual Listings
 -------------------------
 

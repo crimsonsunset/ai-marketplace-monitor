@@ -17,6 +17,8 @@
 
 An intelligent tool that monitors Facebook Marketplace listings using AI to help you find the best deals. Get instant notifications when items matching your criteria are posted, with AI-powered analysis of each listing.
 
+> **Note:** This is a fork of the original [BoPeng/ai-marketplace-monitor](https://github.com/BoPeng/ai-marketplace-monitor). It tracks upstream and adds its own fixes and improvements on top — see [What's New](#whats-new) below.
+
 **📚 [Read the Full Documentation](https://ai-marketplace-monitor.readthedocs.io/)**
 
 ![Search In Action](docs/search_in_action.png)
@@ -33,8 +35,20 @@ AI: Great deal; A well-priced, well-maintained camera meets all search criteria,
 
 ## What's New
 
+Changes in this fork, on top of upstream:
+
+- **Smarter headless mode**: `--headless` now keeps the browser window hidden by default, only showing it briefly for the first login (or if a saved session expires) so you can complete 2FA — then it hides itself again automatically.
+- **Browser closes between scheduled runs**: once all due jobs are processed, the browser is closed to save memory/CPU and is relaunched right before the next scheduled run.
+- **Persistent login sessions**: browser cookies/storage are saved between runs, so you don't have to log in to Facebook (or solve 2FA) every time the monitor restarts.
+- **One notification per listing**: push/chat notifications (Pushover, ntfy, Telegram, Pushbullet, etc.) now send a separate message per new listing instead of bundling several listings into one message; email notifications remain a single digest.
+- **Fixed AI response cache invalidation**: previously-evaluated listings are no longer needlessly re-sent to the AI backend on every run.
+- **Cleaner logs**: AI responses for listings already served from cache are no longer re-logged as if freshly evaluated.
+- **Facebook parsing fixes**: fixed listing parse failures caused by upstream layout/markup changes.
+
+Upstream features:
+
 - **Built-in Web UI**: Edit config, add AI backends, and monitor live logs from your browser — starts automatically with the monitor. See [Web UI documentation](docs/webui.md).
-- **Anthropic/Claude AI Backend**: Use Claude models (e.g. `claude-sonnet-4-20250514`) to evaluate listings alongside OpenAI, DeepSeek, and Ollama. See [AI Services](docs/README.md#ai-services) for configuration.
+- **Anthropic/Claude AI Backend**: Use Claude models (e.g. `claude-sonnet-4-20250514`) to evaluate listings alongside OpenAI, DeepSeek, Gemini, and Ollama. See [AI Services](docs/README.md#ai-services) for configuration.
 - **Configurable Rate Limiting**: Rate limiting framework for all notification types with per-instance and global limits. Telegram notifications use optimized defaults automatically.
 
 **Table of Contents:**
@@ -202,7 +216,7 @@ For detailed information on setup and advanced features, see the comprehensive d
 
 **AI Integration:**
 
-- OpenAI, DeepSeek, Anthropic, Ollama setup
+- OpenAI, DeepSeek, Gemini, Anthropic, Ollama setup
 - Custom prompt configuration
 - Rating thresholds and filtering
 
@@ -253,6 +267,7 @@ We provide multiple ways to access support and contribute to AI Marketplace Moni
 
 ## 🙏 Credits
 
+- This project is a fork of [BoPeng/ai-marketplace-monitor](https://github.com/BoPeng/ai-marketplace-monitor) — all credit for the original design and implementation goes to [BoPeng](https://github.com/BoPeng) and upstream contributors.
 - Some of the code was copied from [facebook-marketplace-scraper](https://github.com/passivebot/facebook-marketplace-scraper).
 - Region definitions were copied from [facebook-marketplace-nationwide](https://github.com/gmoz22/facebook-marketplace-nationwide/), which is released under an MIT license as of Jan 2025.
 - This package was created with [Cookiecutter](https://github.com/cookiecutter/cookiecutter) and the [cookiecutter-modern-pypackage](https://github.com/fedejaure/cookiecutter-modern-pypackage) project template.

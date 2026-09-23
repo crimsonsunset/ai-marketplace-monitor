@@ -31,9 +31,10 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
+from ..utils import cache
 from .auth import (
     CSRF_COOKIE,
     CSRF_HEADER,
@@ -47,6 +48,7 @@ from .auth import (
 )
 from .config_api import ConfigFileService
 from .config_auth import extract_credentials
+from .found_export import iter_found_csv, iter_found_rows
 from .log_handler import LogBroadcastHandler
 
 # Ensure the vendored toml-edit-js WASM bundle is served with the right
@@ -303,7 +305,7 @@ def create_app(
             "sections": sections,
         }
 
-    @app.put("/api/config/file/{file_id}")
+    @app.put("/api/config/file/{file_id}", response_model=None)
     async def put_config_file(
         file_id: str,
         body: Dict[str, Any],
@@ -464,6 +466,19 @@ def create_app(
         @app.get("/")
         async def index() -> FileResponse:
             return FileResponse(STATIC_DIR / "index.html")
+
+    # Sync def (not async): FastAPI runs it in a threadpool and Starlette
+    # iterates the sync generator there too, so the blocking cache scan never
+    # runs on the event loop. The body streams row-by-row rather than buffering
+    # the whole CSV, keeping memory bounded for large exports.
+    @app.get("/api/found.csv")
+    def export_found_csv(_: str = Depends(require_session)) -> StreamingResponse:
+        filename = f"found-items-{time.strftime('%Y%m%d-%H%M%S')}.csv"
+        return StreamingResponse(
+            iter_found_csv(iter_found_rows(cache)),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     return app
 

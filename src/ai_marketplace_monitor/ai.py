@@ -17,6 +17,7 @@ from .utils import BaseConfig, CacheType, CounterItem, cache, counter, hilight
 class AIServiceProvider(Enum):
     OPENAI = "OpenAI"
     DEEPSEEK = "DeepSeek"
+    GEMINI = "Gemini"
     ANTHROPIC = "Anthropic"
     OLLAMA = "Ollama"
 
@@ -26,6 +27,10 @@ class AIResponse:
     score: int
     comment: str
     name: str = ""
+    # True when this response was loaded from a previous run's cache rather
+    # than freshly computed. Not meaningful as stored cache content — always
+    # recomputed on load, see from_cache().
+    cached: bool = False
 
     NOT_EVALUATED: ClassVar = "Not evaluated by AI"
 
@@ -71,7 +76,7 @@ class AIResponse:
         )
         if res is None:
             return None
-        return AIResponse(**res)
+        return AIResponse(**{**res, "cached": True})
 
     def to_cache(
         self: "AIResponse",
@@ -133,6 +138,11 @@ class OpenAIConfig(AIConfig):
 
 @dataclass
 class DeekSeekConfig(OpenAIConfig):
+    pass
+
+
+@dataclass
+class GeminiConfig(OpenAIConfig):
     pass
 
 
@@ -366,6 +376,17 @@ class DeepSeekBackend(OpenAIBackend):
     @classmethod
     def get_config(cls: Type["DeepSeekBackend"], **kwargs: Any) -> DeekSeekConfig:
         return DeekSeekConfig(**kwargs)
+
+
+class GeminiBackend(OpenAIBackend):
+    """Google Gemini via its OpenAI-compatible endpoint."""
+
+    default_model = "gemini-2.5-flash"
+    base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+    @classmethod
+    def get_config(cls: Type["GeminiBackend"], **kwargs: Any) -> GeminiConfig:
+        return GeminiConfig(**kwargs)
 
 
 class OllamaBackend(OpenAIBackend):

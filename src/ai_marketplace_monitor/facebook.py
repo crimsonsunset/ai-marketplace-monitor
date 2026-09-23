@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from enum import Enum
 from itertools import repeat
 from logging import Logger
-from typing import Any, Generator, List, Tuple, Type, cast
+from typing import Any, Callable, Generator, List, Tuple, Type, cast
 from urllib.parse import quote
 
 import humanize
 from currency_converter import CurrencyConverter  # type: ignore
 from playwright.sync_api import Browser, ElementHandle, Page  # type: ignore
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError  # type: ignore
 from rich.pretty import pretty_repr
 
 from .listing import Listing
@@ -79,6 +80,24 @@ class Category(Enum):
     VIDEO_GAMES = "videogames"
 
 
+class SortBy(Enum):
+    SUGGESTED = "suggested"
+    NEW = "new"
+    PRICE_ASCEND = "price_ascend"
+    PRICE_DESCEND = "price_descend"
+    DISTANCE_ASCEND = "distance_ascend"
+
+
+# facebook's `sortBy` query values, keyed by the accepted config value. `suggested`
+# is the marketplace default and is expressed by omitting the parameter altogether.
+SORT_BY_PARAM = {
+    SortBy.NEW.value: "creation_time_descend",
+    SortBy.PRICE_ASCEND.value: "price_ascend",
+    SortBy.PRICE_DESCEND.value: "price_descend",
+    SortBy.DISTANCE_ASCEND.value: "distance_ascend",
+}
+
+
 @dataclass
 class FacebookMarketItemCommonConfig(BaseConfig):
     """Item options that can be defined in marketplace
@@ -93,6 +112,7 @@ class FacebookMarketItemCommonConfig(BaseConfig):
     date_listed: List[int] | None = None
     delivery_method: List[str] | None = None
     category: str | None = None
+    sort_by: str | None = None
 
     def handle_seller_locations(self: "FacebookMarketItemCommonConfig") -> None:
         if self.seller_locations is None:
@@ -200,6 +220,15 @@ class FacebookMarketItemCommonConfig(BaseConfig):
                 f"Item {hilight(self.name)} category must be one of {', '.join(x.value for x in Category)}."
             )
 
+    def handle_sort_by(self: "FacebookMarketItemCommonConfig") -> None:
+        if self.sort_by is None:
+            return
+
+        if not isinstance(self.sort_by, str) or self.sort_by not in [x.value for x in SortBy]:
+            raise ValueError(
+                f"Item {hilight(self.name)} sort_by must be one of {', '.join(x.value for x in SortBy)}."
+            )
+
 
 @dataclass
 class FacebookMarketplaceConfig(MarketplaceConfig, FacebookMarketItemCommonConfig):
@@ -265,9 +294,18 @@ class FacebookMarketplace(Marketplace):
         browser: Browser | None,
         keyboard_monitor: KeyboardMonitor | None = None,
         logger: Logger | None = None,
+        request_visible_browser: Callable[[], Browser] | None = None,
+        restore_configured_browser: Callable[[], Browser] | None = None,
     ) -> None:
         assert name == self.name
-        super().__init__(name, browser, keyboard_monitor, logger)
+        super().__init__(
+            name,
+            browser,
+            keyboard_monitor,
+            logger,
+            request_visible_browser,
+            restore_configured_browser,
+        )
         self.page: Page | None = None
 
     @classmethod
@@ -278,9 +316,8 @@ class FacebookMarketplace(Marketplace):
     def get_item_config(cls: Type["FacebookMarketplace"], **kwargs: Any) -> FacebookItemConfig:
         return FacebookItemConfig(**kwargs)
 
-    def login(self: "FacebookMarketplace") -> None:
-        assert self.browser is not None
-
+    def _open_login_page(self: "FacebookMarketplace") -> None:
+        """Create a page, navigate to the login URL, and dismiss the cookie banner."""
         self.page = self.create_page(swap_proxy=True)
 
         # Navigate to the URL, no timeout
@@ -311,13 +348,60 @@ class FacebookMarketplace(Marketplace):
                     f"{hilight('[Login]', 'fail')} Could not handle cookie pop-up (or it was not present): {e!s}"
                 )
 
+    def login(self: "FacebookMarketplace") -> None:
+        assert self.browser is not None
         self.config: FacebookMarketplaceConfig
+
+        # If we don't have a saved session yet, this login will need fresh
+        # credentials and possibly a manual 2FA step. If the browser is
+        # currently running headless, temporarily switch it to a visible
+        # window so the user can actually see and complete it, then switch
+        # back to headless once the session has been saved.
+        showing_browser_for_login = not self.storage_state_path.is_file()
+        if showing_browser_for_login and self.request_visible_browser is not None:
+            self.browser = self.request_visible_browser()
+
+        self._open_login_page()
+
+        # If a previous session was restored from a saved cookie/local-storage
+        # snapshot, Facebook redirects straight to the home feed and no
+        # email/password field will be present here. Detect that and skip
+        # the credential entry and manual-2FA wait entirely. Only a timeout
+        # (field never appeared) is treated as "already logged in" -- any
+        # other error (closed context, crashed page, etc.) should propagate
+        # instead of being silently mistaken for a successful login.
         try:
-            if self.config.username:
+            email_field = self.page.wait_for_selector('input[name="email"]', timeout=15000)
+        except PlaywrightTimeoutError:
+            email_field = None
+
+        if email_field is None:
+            if self.logger:
+                self.logger.info(
+                    f"""{hilight("[Login]", "succ")} Reusing saved Facebook session, no login needed."""
+                )
+            self.save_storage_state()
+            if showing_browser_for_login and self.restore_configured_browser is not None:
+                self.browser = self.restore_configured_browser()
+                self.page = self.create_page()
+            return
+
+        # A login form showed up even though we expected a saved session to
+        # restore it (e.g. the session expired). Switch to a visible browser
+        # now, if not already, so the user can complete it.
+        if not showing_browser_for_login and self.request_visible_browser is not None:
+            showing_browser_for_login = True
+            self.browser = self.request_visible_browser()
+            self._open_login_page()
+            try:
+                email_field = self.page.wait_for_selector('input[name="email"]', timeout=15000)
+            except PlaywrightTimeoutError:
+                email_field = None
+
+        try:
+            if email_field is not None and self.config.username:
                 time.sleep(2)
-                selector = self.page.wait_for_selector('input[name="email"]')
-                if selector is not None:
-                    selector.type(self.config.username, delay=250)
+                email_field.type(self.config.username, delay=250)
             if self.config.password:
                 time.sleep(2)
                 selector = self.page.wait_for_selector('input[name="pass"]')
@@ -325,9 +409,8 @@ class FacebookMarketplace(Marketplace):
                     selector.type(self.config.password, delay=250)
             if self.config.username and self.config.password:
                 time.sleep(2)
-                selector = self.page.wait_for_selector('button[name="login"]')
-                if selector is not None:
-                    selector.click()
+                # Facebook removed the <button name="login"> — press Enter to submit the form
+                self.page.keyboard.press("Enter")
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -349,6 +432,17 @@ class FacebookMarketplace(Marketplace):
                     )
                 )
             doze(login_wait_time, keyboard_monitor=self.keyboard_monitor)
+
+        # Persist cookies/local storage now that we're past login (and any
+        # 2FA challenge), so the next run can restore this session instead
+        # of prompting for 2FA again.
+        self.save_storage_state()
+
+        # Login (and any 2FA) is done -- hide the browser again if we only
+        # made it visible for this login.
+        if showing_browser_for_login and self.restore_configured_browser is not None:
+            self.browser = self.restore_configured_browser()
+            self.page = self.create_page()
 
     def search(
         self: "FacebookMarketplace", item_config: FacebookItemConfig
@@ -399,6 +493,12 @@ class FacebookMarketplace(Marketplace):
             availability = Availability.ALL.value
         if availability is not None and availability != Availability.ALL.value:
             options.append(f"availability={availability}")
+
+        # sort order does not depend on the search city, so it is appended once here.
+        # `suggested` is facebook's default and needs no parameter.
+        sort_by = item_config.sort_by or self.config.sort_by
+        if sort_by and sort_by != SortBy.SUGGESTED.value:
+            options.append(f"sortBy={SORT_BY_PARAM[sort_by]}")
 
         # search multiple keywords and cities
         # there is a small chance that search by different keywords and city will return the same items.
@@ -487,7 +587,7 @@ class FacebookMarketplace(Marketplace):
                     self.page, self.translator, self.logger
                 ).get_listings()
                 time.sleep(5)
-                if self.logger:
+                if not found_listings and self.logger:
                     self.logger.error(
                         f"""{hilight("[Search]", "fail")} Failed to get search results for {search_phrase} from {city}"""
                     )
@@ -873,10 +973,9 @@ class FacebookItemPage(WebPage):
 
 class FacebookRegularItemPage(FacebookItemPage):
     def verify_layout(self: "FacebookRegularItemPage") -> bool:
-        return any(
-            self.translator("Condition") in (x.text_content() or "")
-            for x in self.page.query_selector_all("li")
-        )
+        # Facebook no longer wraps the "Condition" label in a <li>; it now
+        # sits directly in a <span>. Match by exact text regardless of tag.
+        return self.page.get_by_text(self.translator("Condition"), exact=True).count() > 0
 
     def get_title(self: "FacebookRegularItemPage") -> str:
         try:
@@ -936,11 +1035,17 @@ class FacebookRegularItemPage(FacebookItemPage):
 
     def get_description(self: "FacebookRegularItemPage") -> str:
         try:
-            # Find the span with text "condition", then parent, then next...
-            description_element = self.page.locator(
-                f'span:text("{self.translator("Condition")}") >> xpath=ancestor::ul[1] >> xpath=following-sibling::*[1]'
+            # Find the span with text "Condition", then walk up to the
+            # ancestor that also contains the description as a sibling
+            # block (the Condition/value pair sits alone two levels up,
+            # so require more than 2 children to skip past it).
+            condition_text = self.translator("Condition")
+            condition_element = self.page.locator(f'span:text("{condition_text}")').first
+            return self._parent_with_cond(
+                condition_element,
+                lambda x: len(x) > 2 and condition_text in (x[0].text_content() or ""),
+                1,
             )
-            return description_element.text_content() or self.translator("**unspecified**")
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -978,16 +1083,109 @@ class FacebookRegularItemPage(FacebookItemPage):
 
     def get_location(self: "FacebookRegularItemPage") -> str:
         try:
-            # look for "Location is approximate", then find its neighbor
-            approximate_element = self.page.locator(
-                f'span:text("{self.translator("Location is approximate")}")'
-            )
+            # Facebook sometimes renders the city name and "Location is
+            # approximate" as a single span (e.g. "Shah Alam, SGR ·
+            # Location is approximate"), and sometimes as two separate
+            # sibling elements. Handle the combined form first, since its
+            # own text contains more than just the marker; otherwise fall
+            # back to the older sibling-element layout.
+            marker = self.translator("Location is approximate")
+            element = self.page.locator(f'span:text("{marker}")').first
+            own_text = element.text_content() or ""
+            if own_text.strip() != marker.strip():
+                location = own_text.split(marker)[0].replace("·", " ").strip()
+                if location:
+                    return location
             return self._parent_with_cond(
-                approximate_element,
-                lambda x: len(x) == 2
-                and self.translator("Location is approximate") in (x[1].text_content() or ""),
+                element,
+                lambda x: len(x) == 2 and marker in (x[1].text_content() or ""),
                 0,
             )
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"{hilight('[Retrieve]', 'fail')} {e}")
+            return ""
+
+
+class FacebookFlexItemPage(FacebookRegularItemPage):
+    """Layout observed since mid-2026.
+
+    The Details section renders Condition, condition value, and description in
+    nested span/div structures instead of the previous ul/li lists. See #326.
+    """
+
+    def verify_layout(self: "FacebookFlexItemPage") -> bool:
+        return (
+            self.page.locator(f'span:text-is("{self.translator("Condition")}")').count() > 0
+            and len(self.page.query_selector_all("h1")) > 0
+        )
+
+    def _condition_and_description(self: "FacebookFlexItemPage") -> List[str]:
+        """Extract the condition value and description from the Details section.
+
+        Climb from the Condition label; the first non-empty next-sibling text
+        is the condition value, the second is the description.
+        """
+        label = self.page.query_selector(f'span:text-is("{self.translator("Condition")}")')
+        if label is None:
+            return []
+        return label.evaluate(
+            """(el) => {
+              const hits = [];
+              let n = el;
+              for (let i = 0; i < 16 && n && hits.length < 2; i++) {
+                const sib = n.nextElementSibling;
+                const t = sib && sib.textContent ? sib.textContent.trim() : '';
+                if (t) hits.push(t);
+                n = n.parentElement;
+              }
+              return hits;
+            }"""
+        )
+
+    def get_condition(self: "FacebookFlexItemPage") -> str:
+        try:
+            hits = self._condition_and_description()
+            return hits[0] if hits else ""
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"{hilight('[Retrieve]', 'fail')} {e}")
+            return ""
+
+    def get_description(self: "FacebookFlexItemPage") -> str:
+        try:
+            hits = self._condition_and_description()
+            return hits[1] if len(hits) > 1 else ""
+        except KeyboardInterrupt:
+            raise
+        except Exception as e:
+            if self.logger:
+                self.logger.debug(f"{hilight('[Retrieve]', 'fail')} {e}")
+            return ""
+
+    def get_location(self: "FacebookFlexItemPage") -> str:
+        try:
+            phrase = self.translator("Location is approximate")
+            label = self.page.query_selector(f'span:text("{phrase}")')
+            if label is None:
+                return ""
+            text = label.evaluate(
+                """(el, phrase) => {
+                  let n = el;
+                  for (let i = 0; i < 10 && n; i++) {
+                    const t = (n.textContent || '').trim();
+                    if (t.split(phrase).join('').split('\\u00b7').join('').trim()) return t;
+                    n = n.parentElement;
+                  }
+                  return '';
+                }""",
+                phrase,
+            )
+            return text.replace(phrase, "").replace("·", "").strip()
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -1245,6 +1443,7 @@ def parse_listing(
         FacebookAutoItemWithAboutAndDescriptionPage,
         FacebookAutoItemWithDescriptionPage,
         FacebookRegularItemPage,
+        FacebookFlexItemPage,
     ]
 
     for page_model in supported_facebook_item_layouts:
