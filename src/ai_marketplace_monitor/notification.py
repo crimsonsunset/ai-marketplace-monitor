@@ -11,6 +11,20 @@ from .listing import Listing
 from .utils import BaseConfig, hilight
 
 
+def format_model_line(listing: Listing, message_format: str) -> str:
+    """Return a model line, or an empty string when brand and model are blank."""
+    name = " ".join(part for part in (listing.brand, listing.model) if part)
+    if not name:
+        return ""
+    if listing.size_in:
+        name = f"{name}, {listing.size_in} in"
+    if message_format == "markdown":
+        return f"\n**Model**: {name}"
+    if message_format == "html":
+        return f"<br><b>Model</b>: {name}"
+    return f"\nModel: {name}"
+
+
 class NotificationStatus(Enum):
     NOT_NOTIFIED = 0
     EXPIRED = 1
@@ -382,6 +396,7 @@ class PushNotificationConfig(NotificationConfig):
                         f"<br><b>AI</b>: <i>{rating.comment}</i>"
                     )
                 )
+            msg += format_model_line(listing, self.message_format or "plain_text")
             msgs[ns].append((listing, msg))
 
         if not msgs:

@@ -16,7 +16,7 @@ from markupsafe import Markup, escape
 
 from .ai import AIResponse  # type: ignore
 from .listing import Listing
-from .notification import NotificationConfig, NotificationStatus
+from .notification import NotificationConfig, NotificationStatus, format_model_line
 from .utils import fetch_with_retry, hilight, resize_image_data
 
 
@@ -146,7 +146,7 @@ class EmailNotificationConfig(NotificationConfig):
             elif ns == NotificationStatus.LISTING_DISCOUNTED:
                 prefix = "[lISTING DISCOUNTED] "
 
-            messages.append(
+            body = (
                 (
                     f"{prefix}{listing.title}\n{listing.price}, {listing.location}\n"
                     f"{listing.post_url.split('?')[0]}"
@@ -159,6 +159,7 @@ class EmailNotificationConfig(NotificationConfig):
                     f"\nAI: {rating.comment}"
                 )
             )
+            messages.append(body + format_model_line(listing, "plain_text"))
         message = "\n\n".join(messages)
         return message
 

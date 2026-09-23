@@ -1,9 +1,13 @@
+import base64
+import hashlib
+import json
+import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from logging import Logger
-from typing import Any, ClassVar, Generic, Optional, Type, TypeVar
+from typing import Any, Callable, ClassVar, Dict, Generic, List, Optional, Type, TypeVar
 
 from diskcache import Cache  # type: ignore
 from openai import OpenAI  # type: ignore
@@ -491,3 +495,186 @@ class AnthropicBackend(AIBackend):
         res.to_cache(listing, item_config, marketplace_config)
         counter.increment(CounterItem.NEW_AI_QUERY, item_config.name)
         return res
+
+
+# A sticker SKU, not a series phrase like "43 Class C350 Series".
+# Five or more characters, at least two letters and two digits.
+_MODEL_TOKEN = re.compile(r"\b[A-Za-z0-9-]{5,}\b")
+_VISION_MODEL = "google/gemini-3.1-flash-lite"
+_OPENROUTER_URL = "https://openrouter.ai/api/v1"
+_VISION_SYSTEM = (
+    "You extract printed model numbers from product photos. "
+    "Reply with JSON only, no markdown. "
+    "Keys: brand, model, size_in, image_index, confidence. "
+    "Use null when a value is not printed on the photos. "
+    "Do not invent a SKU suffix. A series name is not a sticker SKU."
+)
+
+
+def has_full_model_token(title: str, description: str) -> bool:
+    """Return True when title or description already contains a sticker-style model."""
+    for token in _MODEL_TOKEN.findall(f"{title} {description}"):
+        letters = sum(character.isalpha() for character in token)
+        digits = sum(character.isdigit() for character in token)
+        if letters >= 2 and digits >= 2:
+            return True
+    return False
+
+
+def parse_model_json(text: str) -> Optional[Dict[str, Any]]:
+    """Parse a vision reply into brand, model, size_in, image_index, and confidence."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?", "", cleaned).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {
+        "brand": _nullable_str(data.get("brand")),
+        "model": _nullable_str(data.get("model")),
+        "size_in": _nullable_str(data.get("size_in")),
+        "image_index": _nullable_int(data.get("image_index")),
+        "confidence": _nullable_str(data.get("confidence")),
+    }
+
+
+def _nullable_str(value: Any) -> str:
+    """Return a stripped string, or empty when the model sent null."""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() == "null":
+        return ""
+    return text
+
+
+def _nullable_int(value: Any) -> Optional[int]:
+    """Return an int, or None when the model sent null or a non-number."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_vision_payload(listing: Listing, payload: Dict[str, Any]) -> None:
+    """Copy a cached or fresh vision payload onto the listing."""
+    listing.brand = _nullable_str(payload.get("brand"))
+    listing.model = _nullable_str(payload.get("model"))
+    listing.size_in = _nullable_str(payload.get("size_in"))
+    listing.image_index = _nullable_int(payload.get("image_index"))
+    listing.confidence = _nullable_str(payload.get("confidence"))
+
+
+def _image_bytes_digest(image_bytes: List[bytes]) -> str:
+    """Hash image bytes so a photo change misses the cache and a repeat hits it."""
+    digest = hashlib.sha256()
+    for blob in image_bytes:
+        digest.update(len(blob).to_bytes(8, "big"))
+        digest.update(blob)
+    return digest.hexdigest()
+
+
+def _vision_store(local_cache: Cache | None) -> Cache:
+    """Return the cache that holds vision results."""
+    return cache if local_cache is None else local_cache
+
+
+def _image_parts(title: str, description: str, image_bytes: List[bytes]) -> List[Dict[str, Any]]:
+    """Build OpenAI-style content parts. Images are bytes, not CDN URLs."""
+    parts: List[Dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": (
+                f"Title: {title}\nDescription: {description}\n"
+                "Read the printed brand, model, and size in inches from the photos."
+            ),
+        }
+    ]
+    for blob in image_bytes:
+        encoded = base64.b64encode(blob).decode("ascii")
+        parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
+            }
+        )
+    return parts
+
+
+def _openrouter_complete(parts: List[Dict[str, Any]], api_key: str) -> str:
+    """Send image parts to Gemini Flash Lite on OpenRouter and return the text."""
+    client: Any = OpenAI(
+        api_key=api_key,
+        base_url=_OPENROUTER_URL,
+        default_headers={
+            "X-Title": "AI Marketplace Monitor",
+            "HTTP-Referer": "https://github.com/BoPeng/ai-marketplace-monitor",
+        },
+    )
+    response: Any = client.chat.completions.create(
+        model=_VISION_MODEL,
+        messages=[
+            {"role": "system", "content": _VISION_SYSTEM},
+            {"role": "user", "content": parts},
+        ],
+        extra_body={"reasoning": {"effort": "minimal"}},
+        stream=False,
+    )
+    return response.choices[0].message.content or ""
+
+
+def read_model_from_photos(
+    listing: Listing,
+    image_bytes: List[bytes],
+    logger: Logger | None = None,
+    local_cache: Cache | None = None,
+    complete: Callable[[List[Dict[str, Any]]], str] | None = None,
+) -> None:
+    """Fill listing model fields from photo bytes, using the image-bytes cache.
+
+    Does not change the text deal-rating prompt. A missing key skips the call.
+    ``complete`` is the HTTP call, injected by tests.
+    """
+    if not image_bytes:
+        return
+    store = _vision_store(local_cache)
+    digest = _image_bytes_digest(image_bytes)
+    cache_key = (CacheType.MODEL_VISION.value, digest)
+    cached = store.get(cache_key)
+    if isinstance(cached, dict):
+        _apply_vision_payload(listing, cached)
+        return
+
+    caller = complete
+    if caller is None:
+        api_key = os.environ.get("OPENROUTER_KEY_AIMM")
+        if not api_key:
+            if logger:
+                logger.debug("OPENROUTER_KEY_AIMM is unset. Skipping model photo read.")
+            return
+
+        def caller(parts: List[Dict[str, Any]]) -> str:
+            return _openrouter_complete(parts, api_key)
+
+    try:
+        raw = caller(_image_parts(listing.title, listing.description, image_bytes))
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        if logger:
+            logger.debug(f"{hilight('[AI]', 'fail')} Model photo read failed: {exc}")
+        return
+
+    payload = parse_model_json(raw)
+    if payload is None:
+        if logger:
+            logger.debug(f"{hilight('[AI]', 'fail')} Model photo read was not JSON: {raw[:200]}")
+        return
+    store.set(cache_key, payload, tag=CacheType.MODEL_VISION.value)
+    _apply_vision_payload(listing, payload)
